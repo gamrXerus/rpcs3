@@ -292,7 +292,7 @@ void gui_pad_thread::process_input()
 		return;
 	}
 
-	constexpr u64 ms_threshold = 500;
+	constexpr u64 ms_threshold = 0;  // Very short delay for instant navigation
 
 	const auto on_button_pressed = [this](pad_button button_id, bool pressed, u16 value)
 	{
@@ -320,6 +320,7 @@ void gui_pad_thread::process_input()
 		case pad_button::cross: key = VK_RETURN; break;
 		case pad_button::square: key = VK_BACK; break;
 		case pad_button::triangle: key = VK_TAB; break;
+		case pad_button::ps: key = VK_ESCAPE; break;  // PS button stops emulation
 #elif defined(__linux__)
 		case pad_button::dpad_up: key = KEY_UP; break;
 		case pad_button::dpad_down: key = KEY_DOWN; break;
@@ -329,6 +330,7 @@ void gui_pad_thread::process_input()
 		case pad_button::cross: key = KEY_ENTER; break;
 		case pad_button::square: key = KEY_BACKSPACE; break;
 		case pad_button::triangle: key = KEY_TAB; break;
+		case pad_button::ps: key = KEY_ESC; break;  // PS button stops emulation
 #elif defined (__APPLE__)
 		case pad_button::dpad_up: key = kVK_UpArrow; break;
 		case pad_button::dpad_down: key = kVK_DownArrow; break;
@@ -338,6 +340,7 @@ void gui_pad_thread::process_input()
 		case pad_button::cross: key = kVK_Return; break;
 		case pad_button::square: key = kVK_Delete; break;
 		case pad_button::triangle: key = kVK_Tab; break;
+		case pad_button::ps: key = kVK_Escape; break;  // PS button stops emulation
 #endif
 		case pad_button::L1: btn = mouse_button::left; break;
 		case pad_button::R1: btn = mouse_button::right; break;

@@ -71,7 +71,7 @@ protected:
 	steady_clock::time_point m_initial_timestamp;
 	Timer m_input_timer;
 
-	static constexpr u64 auto_repeat_ms_interval_default = 200;
+	static constexpr u64 auto_repeat_ms_interval_default = 0;  // Very fast for instant navigation
 	pad_button m_last_auto_repeat_button = pad_button::pad_button_max_enum;
 	std::map<pad_button, u64> m_auto_repeat_buttons = {
 		{ pad_button::dpad_up, auto_repeat_ms_interval_default },
