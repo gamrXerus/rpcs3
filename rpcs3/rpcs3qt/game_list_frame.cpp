@@ -921,6 +921,7 @@ void game_list_frame::OnRefreshFinished()
 	{
 		m_game_list->restore_layout(m_gui_settings->GetValue(gui::gl_state).toByteArray());
 		m_game_list->sync_header_actions(m_columnActs, [this](int col) { return m_gui_settings->GetGamelistColVisibility(static_cast<gui::game_list_columns>(col)); });
+		FocusAndSelectFirstEntryIfNoneIs();
 	}
 
 	// Emit signal and remove slots

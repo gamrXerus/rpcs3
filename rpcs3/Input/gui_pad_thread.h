@@ -58,21 +58,25 @@ protected:
 	void emit_event(int type, int code, int val);
 #endif
 
-	std::shared_ptr<PadHandlerBase> m_handler;
-	std::shared_ptr<Pad> m_pad;
+	struct pad_instance
+	{
+		std::shared_ptr<PadHandlerBase> handler;
+		std::shared_ptr<Pad> pad;
+		std::array<bool, static_cast<u32>(pad_button::pad_button_max_enum)> last_button_state{};
+		steady_clock::time_point timestamp;
+		steady_clock::time_point initial_timestamp;
+		pad_button last_auto_repeat_button = pad_button::pad_button_max_enum;
+	};
+
+	std::vector<pad_instance> m_pads;
 
 	std::unique_ptr<named_thread<std::function<void()>>> m_thread;
 	atomic_t<bool> m_allow_global_input = false;
 	static atomic_t<bool> m_reset;
 
-	std::array<bool, static_cast<u32>(pad_button::pad_button_max_enum)> m_last_button_state{};
-
-	steady_clock::time_point m_timestamp;
-	steady_clock::time_point m_initial_timestamp;
 	Timer m_input_timer;
 
-	static constexpr u64 auto_repeat_ms_interval_default = 200;
-	pad_button m_last_auto_repeat_button = pad_button::pad_button_max_enum;
+	static constexpr u64 auto_repeat_ms_interval_default = 0;  // Very fast for instant navigation
 	std::map<pad_button, u64> m_auto_repeat_buttons = {
 		{ pad_button::dpad_up, auto_repeat_ms_interval_default },
 		{ pad_button::dpad_down, auto_repeat_ms_interval_default },

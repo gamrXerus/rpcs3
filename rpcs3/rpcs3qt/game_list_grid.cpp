@@ -171,10 +171,19 @@ void game_list_grid::repaint_icons(std::vector<game_info>& game_data, const QCol
 
 void game_list_grid::FocusAndSelectFirstEntryIfNoneIs()
 {
-	if (!items().empty())
+	if (items().empty())
 	{
-		items().front()->setFocus();
+		return;
 	}
+
+	if (auto* item = selected_item())
+	{
+		item->setFocus();
+		return;
+	}
+
+	items().front()->setFocus();
+	select_item(static_cast<game_list_grid_item*>(items().front()));
 }
 
 bool game_list_grid::eventFilter(QObject* watched, QEvent* event)

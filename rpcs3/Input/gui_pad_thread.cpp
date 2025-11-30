@@ -74,14 +74,7 @@ void gui_pad_thread::update_settings(const std::shared_ptr<gui_settings>& settin
 
 bool gui_pad_thread::init()
 {
-	m_handler.reset();
-	m_pad.reset();
-
-	// Initialize last button states as pressed to avoid unwanted button presses when starting the thread.
-	m_last_button_state.fill(true);
-	m_timestamp = steady_clock::now();
-	m_initial_timestamp = steady_clock::now();
-	m_last_auto_repeat_button = pad_button::pad_button_max_enum;
+	m_pads.clear();
 
 	g_cfg_input_configs.load();
 
@@ -129,31 +122,38 @@ bool gui_pad_thread::init()
 
 		cur_pad_handler->Init();
 
-		m_handler = cur_pad_handler;
-		m_pad = std::make_shared<Pad>(handler_type, i, CELL_PAD_STATUS_DISCONNECTED, CELL_PAD_CAPABILITY_PS3_CONFORMITY | CELL_PAD_CAPABILITY_PRESS_MODE | CELL_PAD_CAPABILITY_ACTUATOR, CELL_PAD_DEV_TYPE_STANDARD);
+		pad_instance instance;
+		instance.handler = cur_pad_handler;
+		instance.pad = std::make_shared<Pad>(handler_type, i, CELL_PAD_STATUS_DISCONNECTED, CELL_PAD_CAPABILITY_PS3_CONFORMITY | CELL_PAD_CAPABILITY_PRESS_MODE | CELL_PAD_CAPABILITY_ACTUATOR, CELL_PAD_DEV_TYPE_STANDARD);
+		instance.last_button_state.fill(true); // Initialize as pressed to avoid unwanted button presses
+		instance.timestamp = steady_clock::now();
+		instance.initial_timestamp = steady_clock::now();
+		instance.last_auto_repeat_button = pad_button::pad_button_max_enum;
 
-		if (!cur_pad_handler->bindPadToDevice(m_pad))
+		if (!cur_pad_handler->bindPadToDevice(instance.pad))
 		{
 			gui_log.error("gui_pad_thread: Failed to bind device '%s' to handler %s.", cfg->device.to_string(), handler_type);
+			continue; // Skip this pad if binding failed
 		}
 
 		gui_log.notice("gui_pad_thread: Pad %d: device='%s', handler=%s, VID=0x%x, PID=0x%x, class_type=0x%x, class_profile=0x%x",
-			i, cfg->device.to_string(), m_pad->m_pad_handler, m_pad->m_vendor_id, m_pad->m_product_id, m_pad->m_class_type, m_pad->m_class_profile);
+			i, cfg->device.to_string(), instance.pad->m_pad_handler, instance.pad->m_vendor_id, instance.pad->m_product_id, instance.pad->m_class_type, instance.pad->m_class_profile);
 
 		if (handler_type != pad_handler::null)
 		{
 			input_log.notice("gui_pad_thread %d: config=\n%s", i, cfg->to_string());
 		}
 
-		// We only use one pad
-		break;
+		m_pads.push_back(std::move(instance));
 	}
 
-	if (!m_handler || !m_pad)
+	if (m_pads.empty())
 	{
 		gui_log.notice("gui_pad_thread: No devices configured.");
 		return false;
 	}
+
+	gui_log.notice("gui_pad_thread: Configured %d pad(s) for GUI input", m_pads.size());
 
 #ifdef __linux__
 	gui_log.notice("gui_pad_thread: opening /dev/uinput");
@@ -169,7 +169,7 @@ bool gui_pad_thread::init()
 	usetup.id.bustype = BUS_USB;
 	usetup.id.vendor = 0x1234;
 	usetup.id.product = 0x1234;
-	std::strcpy(usetup.name, "RPCS3 GUI Input Device");
+	strcpy_trunc(usetup.name, "RPCS3 GUI Input Device"sv);
 
 	// The ioctls below will enable the device that is about to be created to pass events.
 	CHECK_IOCTRL_RET(ioctl(m_uinput_fd, UI_SET_EVBIT, EV_KEY));
@@ -234,14 +234,18 @@ std::shared_ptr<PadHandlerBase> gui_pad_thread::GetHandler(pad_handler type)
 
 void gui_pad_thread::InitPadConfig(cfg_pad& cfg, pad_handler type, std::shared_ptr<PadHandlerBase>& handler)
 {
+	// We need to restore the original defaults first.
+	cfg.from_default();
+
 	if (!handler)
 	{
 		handler = GetHandler(type);
+	}
 
-		if (handler)
-		{
-			handler->init_config(&cfg);
-		}
+	if (handler)
+	{
+		// Set and apply actual defaults depending on pad handler
+		handler->init_config(&cfg);
 	}
 }
 
@@ -263,9 +267,16 @@ void gui_pad_thread::run()
 		}
 
 		// Only process input if there is an active window
-		if (m_handler && m_pad && (m_allow_global_input || QApplication::activeWindow()))
+		if (!m_pads.empty() && (m_allow_global_input || QApplication::activeWindow()))
 		{
-			m_handler->process();
+			// Process all pad handlers
+			for (auto& pad_inst : m_pads)
+			{
+				if (pad_inst.handler)
+				{
+					pad_inst.handler->process();
+				}
+			}
 
 			if (thread_ctrl::state() == thread_state::aborting)
 			{
@@ -283,267 +294,293 @@ void gui_pad_thread::run()
 
 void gui_pad_thread::process_input()
 {
-	if (!m_pad || !m_pad->is_connected())
+	constexpr u64 ms_threshold = 0;  // Very short delay for instant navigation
+
+	// Process input from all connected pads
+	for (size_t pad_index = 0; pad_index < m_pads.size(); ++pad_index)
 	{
-		return;
-	}
+		auto& pad_inst = m_pads[pad_index];
 
-	constexpr u64 ms_threshold = 500;
-
-	const auto on_button_pressed = [this](pad_button button_id, bool pressed, u16 value)
-	{
-		if (button_id == m_mouse_boost_button)
+		if (!pad_inst.pad || !pad_inst.pad->is_connected())
 		{
-			m_boost_mouse = pressed;
-			return;
+			continue;
 		}
 
-		u16 key = 0;
-		mouse_button btn = mouse_button::none;
-		mouse_wheel wheel = mouse_wheel::none;
-		float wheel_delta = 0.0f;
-		const float wheel_multiplier = pressed ? (m_boost_mouse ? 10.0f : 1.0f) : 0.0f;
-		const float move_multiplier = pressed ? (m_boost_mouse ? 40.0f : 20.0f) : 0.0f;
+		// Only allow the first controller to handle mouse movement to prevent drift from multiple controllers
+		const bool allow_mouse_movement = (pad_index == 0);
 
-		switch (button_id)
+		const auto on_button_pressed = [this, allow_mouse_movement](pad_button button_id, bool pressed, u16 value)
 		{
-#ifdef _WIN32
-		case pad_button::dpad_up: key = VK_UP; break;
-		case pad_button::dpad_down: key = VK_DOWN; break;
-		case pad_button::dpad_left: key = VK_LEFT; break;
-		case pad_button::dpad_right: key = VK_RIGHT; break;
-		case pad_button::circle: key = VK_ESCAPE; break;
-		case pad_button::cross: key = VK_RETURN; break;
-		case pad_button::square: key = VK_BACK; break;
-		case pad_button::triangle: key = VK_TAB; break;
-#elif defined(__linux__)
-		case pad_button::dpad_up: key = KEY_UP; break;
-		case pad_button::dpad_down: key = KEY_DOWN; break;
-		case pad_button::dpad_left: key = KEY_LEFT; break;
-		case pad_button::dpad_right: key = KEY_RIGHT; break;
-		case pad_button::circle: key = KEY_ESC; break;
-		case pad_button::cross: key = KEY_ENTER; break;
-		case pad_button::square: key = KEY_BACKSPACE; break;
-		case pad_button::triangle: key = KEY_TAB; break;
-#elif defined (__APPLE__)
-		case pad_button::dpad_up: key = kVK_UpArrow; break;
-		case pad_button::dpad_down: key = kVK_DownArrow; break;
-		case pad_button::dpad_left: key = kVK_LeftArrow; break;
-		case pad_button::dpad_right: key = kVK_RightArrow; break;
-		case pad_button::circle: key = kVK_Escape; break;
-		case pad_button::cross: key = kVK_Return; break;
-		case pad_button::square: key = kVK_Delete; break;
-		case pad_button::triangle: key = kVK_Tab; break;
-#endif
-		case pad_button::L1: btn = mouse_button::left; break;
-		case pad_button::R1: btn = mouse_button::right; break;
-		case pad_button::rs_up: wheel = mouse_wheel::vertical; wheel_delta = 10.0f * wheel_multiplier; break;
-		case pad_button::rs_down: wheel = mouse_wheel::vertical; wheel_delta = -10.0f * wheel_multiplier; break;
-		case pad_button::rs_left: wheel = mouse_wheel::horizontal; wheel_delta = -10.0f * wheel_multiplier; break;
-		case pad_button::rs_right: wheel = mouse_wheel::horizontal; wheel_delta = 10.0f * wheel_multiplier; break;
-		case pad_button::ls_up: m_mouse_delta_y -= (abs(value - 128) / 255.f) * move_multiplier; break;
-		case pad_button::ls_down: m_mouse_delta_y += (abs(value - 128) / 255.f) * move_multiplier; break;
-		case pad_button::ls_left: m_mouse_delta_x -= (abs(value - 128) / 255.f) * move_multiplier; break;
-		case pad_button::ls_right: m_mouse_delta_x += (abs(value - 128) / 255.f) * move_multiplier; break;
-		default: return;
-		}
+			// Check if this is a mouse-related button and if we should process it
+			const bool is_mouse_button = (button_id == m_mouse_boost_button ||
+			                               button_id == pad_button::ls_up || button_id == pad_button::ls_down ||
+			                               button_id == pad_button::ls_left || button_id == pad_button::ls_right ||
+			                               button_id == pad_button::rs_up || button_id == pad_button::rs_down ||
+			                               button_id == pad_button::rs_left || button_id == pad_button::rs_right ||
+			                               button_id == pad_button::L1 || button_id == pad_button::R1);
 
-		if (key)
-		{
-			send_key_event(key, pressed);
-		}
-		else if (btn != mouse_button::none)
-		{
-			send_mouse_button_event(btn, pressed);
-		}
-		else if (wheel != mouse_wheel::none && pressed)
-		{
-			send_mouse_wheel_event(wheel, wheel_delta);
-		}
-	};
-
-	const auto handle_button_press = [&](pad_button button_id, bool pressed, u16 value)
-	{
-		if (button_id >= pad_button::pad_button_max_enum)
-		{
-			return;
-		}
-
-		bool& last_state = m_last_button_state[static_cast<u32>(button_id)];
-
-		if (pressed)
-		{
-			const bool is_auto_repeat_button = m_auto_repeat_buttons.contains(button_id);
-			const bool is_mouse_move_button = m_mouse_move_buttons.contains(button_id);
-
-			if (!last_state)
+			// Skip mouse buttons if this controller is not allowed to control the mouse
+			if (is_mouse_button && !allow_mouse_movement)
 			{
-				if (button_id != m_mouse_boost_button && !is_mouse_move_button)
-				{
-					// The button was not pressed before, so this is a new button press. Reset auto-repeat.
-					m_timestamp = steady_clock::now();
-					m_initial_timestamp = m_timestamp;
-					m_last_auto_repeat_button = is_auto_repeat_button ? button_id : pad_button::pad_button_max_enum;
-				}
-
-				on_button_pressed(static_cast<pad_button>(button_id), true, value);
+				return;
 			}
-			else if (is_auto_repeat_button)
+
+			if (button_id == m_mouse_boost_button)
 			{
-				if (m_last_auto_repeat_button == button_id
-				    && m_input_timer.GetMsSince(m_initial_timestamp) > ms_threshold
-				    && m_input_timer.GetMsSince(m_timestamp) > m_auto_repeat_buttons.at(button_id))
+				m_boost_mouse = pressed;
+				return;
+			}
+
+			u16 key = 0;
+			mouse_button btn = mouse_button::none;
+			mouse_wheel wheel = mouse_wheel::none;
+			float wheel_delta = 0.0f;
+			const float wheel_multiplier = pressed ? (m_boost_mouse ? 10.0f : 1.0f) : 0.0f;
+			const float move_multiplier = pressed ? (m_boost_mouse ? 40.0f : 20.0f) : 0.0f;
+
+			switch (button_id)
+			{
+#ifdef _WIN32
+			case pad_button::dpad_up: key = VK_UP; break;
+			case pad_button::dpad_down: key = VK_DOWN; break;
+			case pad_button::dpad_left: key = VK_LEFT; break;
+			case pad_button::dpad_right: key = VK_RIGHT; break;
+			case pad_button::circle: key = VK_ESCAPE; break;
+			case pad_button::cross: key = VK_RETURN; break;
+			case pad_button::square: key = VK_BACK; break;
+			case pad_button::triangle: key = VK_TAB; break;
+			case pad_button::ps: key = VK_ESCAPE; break;  // PS button stops emulation
+#elif defined(__linux__)
+			case pad_button::dpad_up: key = KEY_UP; break;
+			case pad_button::dpad_down: key = KEY_DOWN; break;
+			case pad_button::dpad_left: key = KEY_LEFT; break;
+			case pad_button::dpad_right: key = KEY_RIGHT; break;
+			case pad_button::circle: key = KEY_ESC; break;
+			case pad_button::cross: key = KEY_ENTER; break;
+			case pad_button::square: key = KEY_BACKSPACE; break;
+			case pad_button::triangle: key = KEY_TAB; break;
+			case pad_button::ps: key = KEY_ESC; break;  // PS button stops emulation
+#elif defined (__APPLE__)
+			case pad_button::dpad_up: key = kVK_UpArrow; break;
+			case pad_button::dpad_down: key = kVK_DownArrow; break;
+			case pad_button::dpad_left: key = kVK_LeftArrow; break;
+			case pad_button::dpad_right: key = kVK_RightArrow; break;
+			case pad_button::circle: key = kVK_Escape; break;
+			case pad_button::cross: key = kVK_Return; break;
+			case pad_button::square: key = kVK_Delete; break;
+			case pad_button::triangle: key = kVK_Tab; break;
+			case pad_button::ps: key = kVK_Escape; break;  // PS button stops emulation
+#endif
+			case pad_button::L1: btn = mouse_button::left; break;
+			case pad_button::R1: btn = mouse_button::right; break;
+			case pad_button::rs_up: wheel = mouse_wheel::vertical; wheel_delta = 10.0f * wheel_multiplier; break;
+			case pad_button::rs_down: wheel = mouse_wheel::vertical; wheel_delta = -10.0f * wheel_multiplier; break;
+			case pad_button::rs_left: wheel = mouse_wheel::horizontal; wheel_delta = -10.0f * wheel_multiplier; break;
+			case pad_button::rs_right: wheel = mouse_wheel::horizontal; wheel_delta = 10.0f * wheel_multiplier; break;
+			case pad_button::ls_up: m_mouse_delta_y -= (abs(value - 128) / 255.f) * move_multiplier; break;
+			case pad_button::ls_down: m_mouse_delta_y += (abs(value - 128) / 255.f) * move_multiplier; break;
+			case pad_button::ls_left: m_mouse_delta_x -= (abs(value - 128) / 255.f) * move_multiplier; break;
+			case pad_button::ls_right: m_mouse_delta_x += (abs(value - 128) / 255.f) * move_multiplier; break;
+			default: return;
+			}
+
+			if (key)
+			{
+				send_key_event(key, pressed);
+			}
+			else if (btn != mouse_button::none)
+			{
+				send_mouse_button_event(btn, pressed);
+			}
+			else if (wheel != mouse_wheel::none && pressed)
+			{
+				send_mouse_wheel_event(wheel, wheel_delta);
+			}
+		};
+
+		const auto handle_button_press = [&](pad_button button_id, bool pressed, u16 value)
+		{
+			if (button_id >= pad_button::pad_button_max_enum)
+			{
+				return;
+			}
+
+			bool& last_state = pad_inst.last_button_state[static_cast<u32>(button_id)];
+
+			if (pressed)
+			{
+				const bool is_auto_repeat_button = m_auto_repeat_buttons.contains(button_id);
+				const bool is_mouse_move_button = m_mouse_move_buttons.contains(button_id);
+
+				if (!last_state)
 				{
-					// The auto-repeat button was pressed for at least the given threshold in ms and will trigger at an interval.
-					m_timestamp = steady_clock::now();
+					if (button_id != m_mouse_boost_button && !is_mouse_move_button)
+					{
+						// The button was not pressed before, so this is a new button press. Reset auto-repeat.
+						pad_inst.timestamp = steady_clock::now();
+						pad_inst.initial_timestamp = pad_inst.timestamp;
+						pad_inst.last_auto_repeat_button = is_auto_repeat_button ? button_id : pad_button::pad_button_max_enum;
+					}
+
 					on_button_pressed(static_cast<pad_button>(button_id), true, value);
 				}
-				else if (m_last_auto_repeat_button == pad_button::pad_button_max_enum)
+				else if (is_auto_repeat_button)
 				{
-					// An auto-repeat button was already pressed before and will now start triggering again after the next threshold.
-					m_last_auto_repeat_button = button_id;
+					if (pad_inst.last_auto_repeat_button == button_id
+					    && m_input_timer.GetMsSince(pad_inst.initial_timestamp) > ms_threshold
+					    && m_input_timer.GetMsSince(pad_inst.timestamp) > m_auto_repeat_buttons.at(button_id))
+					{
+						// The auto-repeat button was pressed for at least the given threshold in ms and will trigger at an interval.
+						pad_inst.timestamp = steady_clock::now();
+						on_button_pressed(static_cast<pad_button>(button_id), true, value);
+					}
+					else if (pad_inst.last_auto_repeat_button == pad_button::pad_button_max_enum)
+					{
+						// An auto-repeat button was already pressed before and will now start triggering again after the next threshold.
+						pad_inst.last_auto_repeat_button = button_id;
+					}
+				}
+				else if (is_mouse_move_button)
+				{
+					on_button_pressed(static_cast<pad_button>(button_id), pressed, value);
 				}
 			}
-			else if (is_mouse_move_button)
+			else if (last_state)
 			{
-				on_button_pressed(static_cast<pad_button>(button_id), pressed, value);
-			}
-		}
-		else if (last_state)
-		{
-			if (m_last_auto_repeat_button == button_id)
-			{
-				// We stopped pressing an auto-repeat button, so re-enable auto-repeat for other buttons.
-				m_last_auto_repeat_button = pad_button::pad_button_max_enum;
+				if (pad_inst.last_auto_repeat_button == button_id)
+				{
+					// We stopped pressing an auto-repeat button, so re-enable auto-repeat for other buttons.
+					pad_inst.last_auto_repeat_button = pad_button::pad_button_max_enum;
+				}
+
+				on_button_pressed(static_cast<pad_button>(button_id), false, value);
 			}
 
-			on_button_pressed(static_cast<pad_button>(button_id), false, value);
+			last_state = pressed;
+		};
+
+		for (const auto& button : pad_inst.pad->m_buttons)
+		{
+			pad_button button_id = pad_button::pad_button_max_enum;
+			if (button.m_offset == CELL_PAD_BTN_OFFSET_DIGITAL1)
+			{
+				switch (button.m_outKeyCode)
+				{
+				case CELL_PAD_CTRL_LEFT:
+					button_id = pad_button::dpad_left;
+					break;
+				case CELL_PAD_CTRL_RIGHT:
+					button_id = pad_button::dpad_right;
+					break;
+				case CELL_PAD_CTRL_DOWN:
+					button_id = pad_button::dpad_down;
+					break;
+				case CELL_PAD_CTRL_UP:
+					button_id = pad_button::dpad_up;
+					break;
+				case CELL_PAD_CTRL_L3:
+					button_id = pad_button::L3;
+					break;
+				case CELL_PAD_CTRL_R3:
+					button_id = pad_button::R3;
+					break;
+				case CELL_PAD_CTRL_SELECT:
+					button_id = pad_button::select;
+					break;
+				case CELL_PAD_CTRL_START:
+					button_id = pad_button::start;
+					break;
+				default:
+					break;
+				}
+			}
+			else if (button.m_offset == CELL_PAD_BTN_OFFSET_DIGITAL2)
+			{
+				switch (button.m_outKeyCode)
+				{
+				case CELL_PAD_CTRL_TRIANGLE:
+					button_id = pad_button::triangle;
+					break;
+				case CELL_PAD_CTRL_CIRCLE:
+					button_id = g_cfg.sys.enter_button_assignment == enter_button_assign::circle ? pad_button::cross : pad_button::circle;
+					break;
+				case CELL_PAD_CTRL_SQUARE:
+					button_id = pad_button::square;
+					break;
+				case CELL_PAD_CTRL_CROSS:
+					button_id = g_cfg.sys.enter_button_assignment == enter_button_assign::circle ? pad_button::circle : pad_button::cross;
+					break;
+				case CELL_PAD_CTRL_L1:
+					button_id = pad_button::L1;
+					break;
+				case CELL_PAD_CTRL_R1:
+					button_id = pad_button::R1;
+					break;
+				case CELL_PAD_CTRL_L2:
+					button_id = pad_button::L2;
+					break;
+				case CELL_PAD_CTRL_R2:
+					button_id = pad_button::R2;
+					break;
+				case CELL_PAD_CTRL_PS:
+					button_id = pad_button::ps;
+					break;
+				default:
+					break;
+				}
+			}
+
+			handle_button_press(button_id, button.m_pressed, button.m_value);
 		}
 
-		last_state = pressed;
-	};
-
-	for (const auto& button : m_pad->m_buttons)
-	{
-		pad_button button_id = pad_button::pad_button_max_enum;
-		if (button.m_offset == CELL_PAD_BTN_OFFSET_DIGITAL1)
+		for (const AnalogStick& stick : pad_inst.pad->m_sticks)
 		{
-			switch (button.m_outKeyCode)
+			pad_button button_id = pad_button::pad_button_max_enum;
+			pad_button release_id = pad_button::pad_button_max_enum;
+
+			switch (stick.m_offset)
 			{
-			case CELL_PAD_CTRL_LEFT:
-				button_id = pad_button::dpad_left;
+			case CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X:
+				button_id = (stick.m_value <= 128) ? pad_button::ls_left : pad_button::ls_right;
+				release_id = (stick.m_value > 128) ? pad_button::ls_left : pad_button::ls_right;
 				break;
-			case CELL_PAD_CTRL_RIGHT:
-				button_id = pad_button::dpad_right;
+			case CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y:
+				button_id = (stick.m_value <= 128) ? pad_button::ls_up : pad_button::ls_down;
+				release_id = (stick.m_value > 128) ? pad_button::ls_up : pad_button::ls_down;
 				break;
-			case CELL_PAD_CTRL_DOWN:
-				button_id = pad_button::dpad_down;
+			case CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X:
+				button_id = (stick.m_value <= 128) ? pad_button::rs_left : pad_button::rs_right;
+				release_id = (stick.m_value > 128) ? pad_button::rs_left : pad_button::rs_right;
 				break;
-			case CELL_PAD_CTRL_UP:
-				button_id = pad_button::dpad_up;
-				break;
-			case CELL_PAD_CTRL_L3:
-				button_id = pad_button::L3;
-				break;
-			case CELL_PAD_CTRL_R3:
-				button_id = pad_button::R3;
-				break;
-			case CELL_PAD_CTRL_SELECT:
-				button_id = pad_button::select;
-				break;
-			case CELL_PAD_CTRL_START:
-				button_id = pad_button::start;
+			case CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y:
+				button_id = (stick.m_value <= 128) ? pad_button::rs_up : pad_button::rs_down;
+				release_id = (stick.m_value > 128) ? pad_button::rs_up : pad_button::rs_down;
 				break;
 			default:
 				break;
 			}
-		}
-		else if (button.m_offset == CELL_PAD_BTN_OFFSET_DIGITAL2)
-		{
-			switch (button.m_outKeyCode)
+
+			bool pressed;
+
+			if (m_mouse_move_buttons.contains(button_id))
 			{
-			case CELL_PAD_CTRL_TRIANGLE:
-				button_id = pad_button::triangle;
-				break;
-			case CELL_PAD_CTRL_CIRCLE:
-				button_id = g_cfg.sys.enter_button_assignment == enter_button_assign::circle ? pad_button::cross : pad_button::circle;
-				break;
-			case CELL_PAD_CTRL_SQUARE:
-				button_id = pad_button::square;
-				break;
-			case CELL_PAD_CTRL_CROSS:
-				button_id = g_cfg.sys.enter_button_assignment == enter_button_assign::circle ? pad_button::circle : pad_button::cross;
-				break;
-			case CELL_PAD_CTRL_L1:
-				button_id = pad_button::L1;
-				break;
-			case CELL_PAD_CTRL_R1:
-				button_id = pad_button::R1;
-				break;
-			case CELL_PAD_CTRL_L2:
-				button_id = pad_button::L2;
-				break;
-			case CELL_PAD_CTRL_R2:
-				button_id = pad_button::R2;
-				break;
-			case CELL_PAD_CTRL_PS:
-				button_id = pad_button::ps;
-				break;
-			default:
-				break;
+				// Mouse move sticks are always pressed if they surpass a tiny deadzone.
+				constexpr int deadzone = 5;
+				pressed = std::abs(stick.m_value - 128) > deadzone;
 			}
+			else
+			{
+				// Let's say other sticks are only pressed if they are almost completely tilted. Otherwise navigation feels really wacky.
+				pressed = stick.m_value < 30 || stick.m_value > 225;
+			}
+
+			// Release other direction on the same axis first
+			handle_button_press(release_id, false, stick.m_value);
+
+			// Handle currently pressed stick direction
+			handle_button_press(button_id, pressed, stick.m_value);
 		}
-
-		handle_button_press(button_id, button.m_pressed, button.m_value);
-	}
-
-	for (const AnalogStick& stick : m_pad->m_sticks)
-	{
-		pad_button button_id = pad_button::pad_button_max_enum;
-		pad_button release_id = pad_button::pad_button_max_enum;
-
-		switch (stick.m_offset)
-		{
-		case CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X:
-			button_id = (stick.m_value <= 128) ? pad_button::ls_left : pad_button::ls_right;
-			release_id = (stick.m_value > 128) ? pad_button::ls_left : pad_button::ls_right;
-			break;
-		case CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y:
-			button_id = (stick.m_value <= 128) ? pad_button::ls_up : pad_button::ls_down;
-			release_id = (stick.m_value > 128) ? pad_button::ls_up : pad_button::ls_down;
-			break;
-		case CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X:
-			button_id = (stick.m_value <= 128) ? pad_button::rs_left : pad_button::rs_right;
-			release_id = (stick.m_value > 128) ? pad_button::rs_left : pad_button::rs_right;
-			break;
-		case CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y:
-			button_id = (stick.m_value <= 128) ? pad_button::rs_up : pad_button::rs_down;
-			release_id = (stick.m_value > 128) ? pad_button::rs_up : pad_button::rs_down;
-			break;
-		default:
-			break;
-		}
-
-		bool pressed;
-
-		if (m_mouse_move_buttons.contains(button_id))
-		{
-			// Mouse move sticks are always pressed if they surpass a tiny deadzone.
-			constexpr int deadzone = 5;
-			pressed = std::abs(stick.m_value - 128) > deadzone;
-		}
-		else
-		{
-			// Let's say other sticks are only pressed if they are almost completely tilted. Otherwise navigation feels really wacky.
-			pressed = stick.m_value < 30 || stick.m_value > 225;
-		}
-
-		// Release other direction on the same axis first
-		handle_button_press(release_id, false, stick.m_value);
-
-		// Handle currently pressed stick direction
-		handle_button_press(button_id, pressed, stick.m_value);
-	}
+	} // end for (auto& pad_inst : m_pads)
 
 	// Send mouse move event at the end to prevent redundant calls
 

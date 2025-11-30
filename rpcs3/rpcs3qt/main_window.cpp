@@ -279,9 +279,6 @@ bool main_window::Init([[maybe_unused]] bool with_cli_boot)
 	// Disable vsh if not present.
 	ui->bootVSHAct->setEnabled(fs::is_file(g_cfg_vfs.get_dev_flash() + "vsh/module/vsh.self"));
 
-	// Focus to search bar by default
-	ui->mw_searchbar->setFocus();
-
 	// Refresh gamelist last
 	m_game_list_frame->Refresh(true);
 
