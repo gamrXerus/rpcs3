@@ -673,6 +673,9 @@ public:
 	std::array<v128, 128> gpr{};
 	SPU_FPSCR fpscr{};
 
+	// Hypervisor context data
+	rpcs3::hypervisor_context_t hv_ctx; // NOTE: The offset within the class must be within the first 1MiB (10 bits max)
+
 	// MFC command data
 	spu_mfc_cmd ch_mfc_cmd{};
 
@@ -708,7 +711,7 @@ public:
 	const decltype(rdata)* resrv_mem{};
 
 	// Range Lock pointer
-	atomic_t<u64, 64>* range_lock{};
+	atomic_t<u64, 128>* range_lock{};
 
 	u32 srr0 = 0;
 	u32 ch_tag_upd = 0;
@@ -787,8 +790,6 @@ public:
 	u64 block_counter = 0;
 	u64 block_recover = 0;
 	u64 block_failure = 0;
-
-	rpcs3::hypervisor_context_t hv_ctx; // NOTE: The offset within the class must be within the first 1MiB
 
 	u64 ftx = 0; // Failed transactions
 	u64 stx = 0; // Succeeded transactions (pure counters)
@@ -903,7 +904,7 @@ public:
 	// It is safe to use on any address, even if not directly accessed by SPU (so it's slower)
 	// Optionally pass a known allocated address for internal optimization (the current Effective-Address of the MFC command)
 	bool reservation_check(u32 addr, const decltype(rdata)& data, u32 current_eal = 0) const;
-	static bool reservation_check(u32 addr, u32 hash, atomic_t<u64, 64>* range_lock);
+	static bool reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range_lock);
 	usz register_cache_line_waiter(u32 addr);
 	void deregister_cache_line_waiter(usz index);
 
@@ -915,7 +916,7 @@ public:
 	static atomic_t<u32> g_raw_spu_id[5];
 	static atomic_t<u32> g_spu_work_count;
 
-	static atomic_t<u64> g_spu_waiters_by_value[6];
+	static atomic_t<u64, 128> g_spu_waiters_by_value[6];
 
 	static u32 find_raw_spu(u32 id)
 	{
