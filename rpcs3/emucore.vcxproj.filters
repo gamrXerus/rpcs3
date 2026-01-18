@@ -924,6 +924,9 @@
     <ClCompile Include="Emu\Io\usb_device.cpp">
       <Filter>Emu\Io</Filter>
     </ClCompile>
+    <ClCompile Include="Emu\Io\usb_microphone.cpp">
+      <Filter>Emu\Io</Filter>
+    </ClCompile>
     <ClCompile Include="Emu\Io\usb_vfs.cpp">
       <Filter>Emu\Io</Filter>
     </ClCompile>
@@ -1395,6 +1398,15 @@
     </ClCompile>
     <ClCompile Include="Emu\Io\ps_move_data.cpp">
       <Filter>Emu\Io</Filter>
+    </ClCompile>
+    <ClCompile Include="Emu\NP\clans_config.cpp">
+      <Filter>Emu\NP</Filter>
+    </ClCompile>
+    <ClCompile Include="Emu\NP\clans_client.cpp">
+      <Filter>Emu\NP</Filter>
+    </ClCompile>
+    <ClCompile Include="Loader\ISO.cpp">
+      <Filter>Loader</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -2115,6 +2127,9 @@
     <ClInclude Include="Emu\Io\usb_device.h">
       <Filter>Emu\Io</Filter>
     </ClInclude>
+    <ClInclude Include="Emu\Io\usb_microphone.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
     <ClInclude Include="Emu\Io\usb_vfs.h">
       <Filter>Emu\Io</Filter>
     </ClInclude>
@@ -2805,6 +2820,15 @@
     </ClInclude>
     <ClInclude Include="Emu\Io\ps_move_data.h">
       <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\NP\clans_client.h">
+      <Filter>Emu\NP</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\NP\clans_config.h">
+      <Filter>Emu\NP</Filter>
+    </ClInclude>
+    <ClInclude Include="Loader\ISO.h">
+      <Filter>Loader</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

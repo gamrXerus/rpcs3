@@ -101,6 +101,7 @@ struct EmuCallbacks
 	std::function<std::string(localized_string_id, const char*)> get_localized_string;
 	std::function<std::u32string(localized_string_id, const char*)> get_localized_u32string;
 	std::function<std::string(const cfg::_base*, u32)> get_localized_setting;
+	std::function<std::string(std::string_view)> get_photo_path;
 	std::function<void(const std::string&, std::optional<f32>)> play_sound;
 	std::function<bool(const std::string&, std::string&, s32&, s32&, s32&)> get_image_info; // (filename, sub_type, width, height, CellSearchOrientation)
 	std::function<bool(const std::string&, s32, s32, s32&, s32&, u8*, bool)> get_scaled_image; // (filename, target_width, target_height, width, height, dst, force_fit)
@@ -147,6 +148,7 @@ class Emulator final
 	std::string m_path;
 	std::string m_path_old;
 	std::string m_path_original;
+	std::string m_path_real;
 	std::string m_title_id;
 	std::string m_title;
 	std::string m_localized_title;
@@ -392,7 +394,7 @@ public:
 		{
 			if (active)
 			{
-				_this->m_restrict_emu_state_change--;
+				_this->m_restrict_emu_state_change.try_dec(0);
 			}
 		}
 

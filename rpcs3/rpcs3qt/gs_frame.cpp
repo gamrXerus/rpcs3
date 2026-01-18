@@ -339,6 +339,14 @@ void gs_frame::handle_shortcut(gui::shortcuts::shortcut shortcut_key, const QKey
 		default: break; // unreachable
 		}
 
+		if (shortcut_key == gui::shortcuts::shortcut::gw_restart && !boot_current_game_savestate(true, index))
+		{
+			// Normal restart if there is no savestate
+			Emu.Restart();
+			break;
+		}
+
+		// Reboot with savestate
 		boot_current_game_savestate(false, index);
 		break;
 	}
@@ -1040,7 +1048,7 @@ void gs_frame::take_screenshot(std::vector<u8>&& data, u32 sshot_width, u32 ssho
 					}
 				}
 
-				const std::string cell_sshot_filename = manager.get_screenshot_path(date_time.toString("yyyy/MM/dd").toStdString());
+				const std::string cell_sshot_filename = Emu.GetCallbacks().get_photo_path(manager.get_photo_title() + ".png");
 				const std::string cell_sshot_dir      = fs::get_parent_dir(cell_sshot_filename);
 
 				screenshot_log.notice("Saving cell screenshot to %s", cell_sshot_filename);
